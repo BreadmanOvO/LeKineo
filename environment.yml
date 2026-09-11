@@ -1,0 +1,12 @@
+name: lerobot
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - cmake=3.31.6
+  - pip:
+      - torch==2.9.1
+      - torchvision==0.24.1
+      - "lerobot[smolvla,libero]"
+

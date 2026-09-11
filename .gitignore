@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+.env
+data/
+artifacts/
+outputs/
+checkpoints/
+wandb/
+*.pt
+*.pth
+*.safetensors
+*.mp4
+
