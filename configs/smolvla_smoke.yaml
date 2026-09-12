@@ -1,0 +1,25 @@
+model:
+  pretrained: lerobot/smolvla_base
+  freeze_vision_encoder: true
+  train_expert_only: true
+  train_state_proj: true
+  load_vlm_weights: true
+  device: cuda
+data:
+  parquet: ${LEKINEO_LIBERO_PARQUET}
+  task_split: ${LEKINEO_TASK_SPLIT}
+  state_indices: [0, 1, 2, 3, 4, 5]
+  action_indices: [0, 1, 2, 3, 4, 5]
+  camera3_source: observation.images.image2
+  language: "pick up the object"
+training:
+  steps: 200
+  batch_size: 1
+  learning_rate: 0.0001
+  grad_clip_norm: 10.0
+  seed: 42
+  log_every: 10
+  use_amp: true
+output:
+  directory: ${LEKINEO_EVIDENCE}/results/day4_smoke
+  checkpoint: ${LEKINEO_EVIDENCE}/results/day4_smoke/checkpoint
