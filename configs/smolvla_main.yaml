@@ -1,0 +1,26 @@
+model:
+  pretrained: lerobot/smolvla_base
+  freeze_vision_encoder: true
+  train_expert_only: true
+  train_state_proj: true
+  load_vlm_weights: true
+  device: cuda
+data:
+  parquet: ${LEKINEO_LIBERO_PARQUET}
+  task_split: ${LEKINEO_TASK_SPLIT}
+  state_indices: [0, 1, 2, 3, 4, 5]
+  action_indices: [0, 1, 2, 3, 4, 5]
+  camera3_source: observation.images.image2
+  language: "pick up the object"
+training:
+  steps: 10000
+  batch_size: 1
+  learning_rate: 0.0001
+  grad_clip_norm: 10.0
+  seed: 42
+  precision: bf16
+  checkpoint_interval: 2000
+  log_every: 50
+output:
+  directory: ${LEKINEO_EVIDENCE}/outputs/smolvla_main
+  checkpoint: ${LEKINEO_EVIDENCE}/outputs/smolvla_main/checkpoints
