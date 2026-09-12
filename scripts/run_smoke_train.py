@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import random
@@ -48,14 +49,23 @@ def set_seed(seed: int) -> None:
 class LiberoAdapter:
     """Loads real rows and applies explicit LIBERO -> SmolVLA schema adapters."""
 
-    def __init__(self, parquet_path: str, state_indices: list[int], action_indices: list[int], chunk_size: int):
-        table = pq.read_table(parquet_path, columns=[
-            "observation.images.image", "observation.images.image2", "observation.state", "action", "episode_index"
-        ])
-        self.rows = table.to_pylist()
+    def __init__(self, parquet_path: str, state_indices: list[int], action_indices: list[int], chunk_size: int,
+                 episode_ids: set[int] | None = None, task_prompts: dict[int, str] | None = None):
+        paths = sorted(glob.glob(parquet_path)) or [parquet_path]
+        columns = ["observation.images.image", "observation.images.image2", "observation.state", "action", "episode_index", "frame_index", "task_index"]
+        self.rows = []
+        for path in paths:
+            table = pq.read_table(path, columns=columns)
+            self.rows.extend(table.to_pylist())
+        if episode_ids is not None:
+            self.rows = [row for row in self.rows if int(row["episode_index"]) in episode_ids]
+        self.rows.sort(key=lambda row: (int(row["episode_index"]), int(row["frame_index"])))
+        if not self.rows:
+            raise ValueError(f"no rows found for parquet={parquet_path!r}, episode_ids={episode_ids}")
         self.state_indices = state_indices
         self.action_indices = action_indices
         self.chunk_size = chunk_size
+        self.task_prompts = task_prompts or {}
         self.images: list[tuple[torch.Tensor, torch.Tensor]] = []
         self.states: list[torch.Tensor] = []
         self.actions: list[torch.Tensor] = []
@@ -82,17 +92,39 @@ class LiberoAdapter:
                 window.append(torch.tensor(self.rows[candidate]["action"], dtype=torch.float32)[self.action_indices])
             self.actions.append(torch.stack(window))
 
-    def batch(self, index: int, device: torch.device, tokens: torch.Tensor, attention: torch.Tensor) -> dict[str, torch.Tensor]:
+    def batch(self, index: int, device: torch.device, tokens: torch.Tensor | dict[int, torch.Tensor], attention: torch.Tensor | dict[int, torch.Tensor]) -> dict[str, torch.Tensor]:
         image1, image2 = self.images[index % len(self.images)]
+        task_id = int(self.rows[index % len(self.rows)].get("task_index", -1))
+        selected_tokens = tokens.get(task_id, next(iter(tokens.values()))) if isinstance(tokens, dict) else tokens
+        selected_attention = attention.get(task_id, next(iter(attention.values()))) if isinstance(attention, dict) else attention
         return {
             "observation.images.camera1": image1.unsqueeze(0).to(device),
             "observation.images.camera2": image2.unsqueeze(0).to(device),
             "observation.images.camera3": image2.unsqueeze(0).to(device),
             "observation.state": self.states[index % len(self.states)].unsqueeze(0).to(device),
             "action": self.actions[index % len(self.actions)].unsqueeze(0).to(device),
-            OBS_LANGUAGE_TOKENS: tokens.to(device),
-            OBS_LANGUAGE_ATTENTION_MASK: attention.bool().to(device),
+            OBS_LANGUAGE_TOKENS: selected_tokens.to(device),
+            OBS_LANGUAGE_ATTENTION_MASK: selected_attention.bool().to(device),
         }
+
+
+def split_inputs(config: dict, split_name: str) -> tuple[set[int] | None, dict[int, str]]:
+    split_path = config["data"].get("task_split")
+    if not split_path or not Path(split_path).exists():
+        return None, {}
+    payload = json.loads(Path(split_path).read_text(encoding="utf-8"))
+    ids = set(int(value) for value in payload.get("episode_ids", {}).get(split_name, []))
+    prompts = {int(key): value for key, value in payload.get("task_names", {}).items()}
+    return ids, prompts
+
+
+def encode_task_prompts(processor, prompts: dict[int, str], fallback: str) -> tuple[dict[int, torch.Tensor] | torch.Tensor, dict[int, torch.Tensor] | torch.Tensor]:
+    if not prompts:
+        encoded = processor.tokenizer(fallback, return_tensors="pt")
+        return encoded["input_ids"], encoded["attention_mask"]
+    encoded = {task_id: processor.tokenizer(text, return_tensors="pt")["input_ids"] for task_id, text in prompts.items()}
+    attention = {task_id: processor.tokenizer(text, return_tensors="pt")["attention_mask"] for task_id, text in prompts.items()}
+    return encoded, attention
 
 
 def trainable_snapshot(policy: SmolVLAPolicy) -> dict[str, torch.Tensor]:
@@ -132,12 +164,15 @@ def main() -> None:
         raise RuntimeError(f"Vision parameters unexpectedly trainable: {frozen_vision[:3]}")
 
     processor = policy.model.vlm_with_expert.processor
-    encoded = processor.tokenizer(config["data"]["language"], return_tensors="pt")
+    episode_ids, task_prompts = split_inputs(config, "train")
+    encoded_tokens, encoded_attention = encode_task_prompts(processor, task_prompts, config["data"]["language"])
     adapter = LiberoAdapter(
         config["data"]["parquet"],
         list(config["data"]["state_indices"]),
         list(config["data"]["action_indices"]),
         policy.config.chunk_size,
+        episode_ids=episode_ids,
+        task_prompts=task_prompts,
     )
     before = trainable_snapshot(policy)
     optimizer = torch.optim.AdamW(
@@ -155,7 +190,7 @@ def main() -> None:
     for step in range(steps):
         started = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
-        batch = adapter.batch(step, device, encoded["input_ids"], encoded["attention_mask"])
+        batch = adapter.batch(step, device, encoded_tokens, encoded_attention)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
             loss, _ = policy(batch)
         if not torch.isfinite(loss):

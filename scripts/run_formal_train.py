@@ -15,7 +15,7 @@ import torch
 
 from lerobot.policies.smolvla import SmolVLAPolicy
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
-from run_smoke_train import LiberoAdapter, load_config, set_seed, trainable_snapshot
+from run_smoke_train import LiberoAdapter, encode_task_prompts, load_config, set_seed, split_inputs, trainable_snapshot
 
 
 def save_checkpoint(
@@ -100,12 +100,15 @@ def main() -> None:
         raise RuntimeError(f"Vision Encoder unexpectedly trainable: {trainable_vision[:3]}")
 
     processor = policy.model.vlm_with_expert.processor
-    encoded = processor.tokenizer(config["data"]["language"], return_tensors="pt")
+    episode_ids, task_prompts = split_inputs(config, "train")
+    encoded_tokens, encoded_attention = encode_task_prompts(processor, task_prompts, config["data"]["language"])
     adapter = LiberoAdapter(
         config["data"]["parquet"],
         list(config["data"]["state_indices"]),
         list(config["data"]["action_indices"]),
         policy.config.chunk_size,
+        episode_ids=episode_ids,
+        task_prompts=task_prompts,
     )
     optimizer = torch.optim.AdamW(
         [parameter for parameter in policy.parameters() if parameter.requires_grad],
@@ -133,7 +136,7 @@ def main() -> None:
             step = step_index + 1
             started = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
-            batch = adapter.batch(step_index, device, encoded["input_ids"], encoded["attention_mask"])
+            batch = adapter.batch(step_index, device, encoded_tokens, encoded_attention)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 loss, _ = policy(batch)
             if not torch.isfinite(loss):

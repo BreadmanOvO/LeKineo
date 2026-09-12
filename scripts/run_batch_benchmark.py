@@ -16,7 +16,7 @@ import torch
 import yaml
 
 from lerobot.policies.smolvla import SmolVLAPolicy
-from run_smoke_train import LiberoAdapter, set_seed
+from run_smoke_train import LiberoAdapter, encode_task_prompts, set_seed, split_inputs
 
 
 def load_config(path: Path) -> dict:
@@ -60,9 +60,11 @@ def benchmark(config: dict, batch_size: int, steps: int) -> dict:
     if any(parameter.requires_grad for name, parameter in policy.named_parameters() if "vision_model" in name.lower()):
         raise RuntimeError("Vision Encoder is not frozen")
     processor = policy.model.vlm_with_expert.processor
-    encoded = processor.tokenizer(config["data"]["language"], return_tensors="pt")
+    episode_ids, task_prompts = split_inputs(config, "train")
+    encoded_tokens, encoded_attention = encode_task_prompts(processor, task_prompts, config["data"]["language"])
     adapter = LiberoAdapter(
-        config["data"]["parquet"], list(config["data"]["state_indices"]), list(config["data"]["action_indices"]), policy.config.chunk_size
+        config["data"]["parquet"], list(config["data"]["state_indices"]), list(config["data"]["action_indices"]), policy.config.chunk_size,
+        episode_ids=episode_ids, task_prompts=task_prompts,
     )
     optimizer = torch.optim.AdamW([p for p in policy.parameters() if p.requires_grad], lr=float(config["training"]["learning_rate"]), weight_decay=1e-10)
     amp_enabled = device.type == "cuda"
@@ -74,7 +76,7 @@ def benchmark(config: dict, batch_size: int, steps: int) -> dict:
         started = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         indices = [(step * batch_size + offset) % len(adapter.rows) for offset in range(batch_size)]
-        batch = make_batch(adapter, indices, device, encoded["input_ids"], encoded["attention_mask"])
+        batch = make_batch(adapter, indices, device, encoded_tokens, encoded_attention)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
             loss, _ = policy(batch)
         if not torch.isfinite(loss):
