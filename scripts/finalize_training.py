@@ -45,20 +45,23 @@ def main() -> None:
         metadata = json.loads(files["metadata.json"].read_text(encoding="utf-8"))
         checkpoints.append({
             "step": step,
-            "path": str(directory),
+            "path": f"outputs/smolvla_main/checkpoints/step-{step:07d}",
             "loss": metadata.get("loss"),
             "loss_mean_last_10": metadata.get("loss_mean_last_10"),
             "trainable_parameter_count": metadata.get("trainable_parameter_count"),
             "files": {name: {"bytes": path.stat().st_size, "sha256": sha256(path)} for name, path in files.items()},
         })
 
+    portable_training = dict(summary)
+    portable_training["output"] = "outputs/smolvla_main"
+    portable_training["config"] = "configs/smolvla_main.yaml"
     frozen = {
         "schema_version": 1,
         "status": "ready_for_day8_offline_evaluation",
-        "source_summary": str(source_summary),
-        "training": summary,
+        "source_summary": "outputs/smolvla_main/training_summary.json",
+        "training": portable_training,
         "data_revision": args.data_revision,
-        "canonical_repo": str(args.repo),
+        "canonical_repo": "LeKineo",
         "canonical_repo_commit": git_revision(args.repo),
         "checkpoint_candidates": checkpoints,
         "evaluation_protocol": {
