@@ -103,8 +103,11 @@ class RealLiberoExecutor:
         for _ in range(task.max_steps):
             obs = self._observation(self._raw, task)
             with torch.inference_mode():
+                queues = getattr(self.policy, "_queues", {})
+                action_queue = queues.get("action")
+                if action_queue is None or len(action_queue) == 0:
+                    self.inference_calls += 1
                 action6 = self.post(self.policy.select_action(self.pre(obs)))
-                self.inference_calls += 1
             action6 = action6.detach().float().cpu().numpy().reshape(-1)
             if action6.shape[0] < 6 or not np.isfinite(action6[:6]).all():
                 self.invalid_action = True

@@ -19,6 +19,8 @@ class EnvironmentObservation:
     success: bool = False
     step_count: int = 0
     invalid_action: bool = False
+    inference_calls: int = 0
+    mean_inference_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ class Verifier:
             "terminated": observation.terminated,
             "step_count": observation.step_count,
             "invalid_action": observation.invalid_action,
+            "inference_calls": observation.inference_calls,
+            "mean_inference_ms": observation.mean_inference_ms,
         }
 
     def _failure(self, reason: str, recovery: str, observation: EnvironmentObservation) -> VerificationResult:
