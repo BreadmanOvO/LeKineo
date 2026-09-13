@@ -66,6 +66,7 @@ def main() -> None:
                     "split": split, "seed": task.seed, "episode": episode, "success": result.success, "episode_steps": details.get("step_count", 0),
                     "early_termination": not result.success, "invalid_action": details.get("invalid_action", False), "retries": result.retries,
                     "recovery_success": bool(result.success and result.retries > 0), "n_action_steps": task.n_action_steps,
+                    "inference_calls": int(details.get("inference_calls", 0)),
                     "mean_inference_ms": 0.0, "peak_vram_gb": (torch.cuda.max_memory_allocated(device) / 1024**3 if device.type == "cuda" else 0.0),
                     "status": "REAL_LIBERO", "failure_reason": result.failure_reason,
                 })

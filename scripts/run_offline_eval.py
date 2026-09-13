@@ -15,7 +15,7 @@ import torch
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from run_smoke_train import LiberoAdapter, encode_task_prompts, load_config, set_seed  # noqa: E402
+from run_smoke_train import LazyLiberoAdapter, encode_task_prompts, load_config, set_seed  # noqa: E402
 from lerobot.policies.smolvla import SmolVLAPolicy  # noqa: E402
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS  # noqa: E402
 
@@ -38,7 +38,7 @@ def evaluate_policy(
     name: str,
     checkpoint: Path | None,
     config: dict,
-    adapter: LiberoAdapter,
+    adapter: LazyLiberoAdapter,
     indices: list[int],
     device: torch.device,
     tokens,
@@ -105,7 +105,7 @@ def main() -> None:
     split = json.loads(args.split.read_text(encoding="utf-8"))
     requested_val_episodes = set(int(value) for value in split["episode_ids"]["val"])
     task_prompts = {int(key): value for key, value in split.get("task_names", {}).items()}
-    adapter = LiberoAdapter(config["data"]["parquet"], list(config["data"]["state_indices"]), list(config["data"]["action_indices"]), 50, task_prompts=task_prompts)
+    adapter = LazyLiberoAdapter(config["data"]["parquet"], list(config["data"]["state_indices"]), list(config["data"]["action_indices"]), 50, episode_ids=requested_val_episodes, task_prompts=task_prompts)
     available_episodes = sorted({row["episode_index"] for row in adapter.rows})
     val_episodes = requested_val_episodes.intersection(available_episodes)
     split_status = "pinned"
@@ -115,7 +115,7 @@ def main() -> None:
             raise RuntimeError(f"formal validation blocked: missing validation episodes (first 10)={missing[:10]}")
         # The cached parquet can be a small shard whose local episode numbering
         # differs from the full task split. Keep the fallback explicit in output.
-        adapter = LiberoAdapter(config["data"]["parquet"], list(config["data"]["state_indices"]), list(config["data"]["action_indices"]), 50, task_prompts=task_prompts)
+        adapter = LazyLiberoAdapter(config["data"]["parquet"], list(config["data"]["state_indices"]), list(config["data"]["action_indices"]), 50, task_prompts=task_prompts)
         available_episodes = sorted({row["episode_index"] for row in adapter.rows})
         val_episodes = {available_episodes[-1]}
         split_status = "provisional_fallback"

@@ -34,6 +34,7 @@ class RealLiberoExecutor:
         self.step_count = 0
         self.last_latency_ms = 0.0
         self.invalid_action = False
+        self.inference_calls = 0
         self._task: TaskSpec | None = None
 
     def reset(self, task: TaskSpec, attempt: int) -> None:
@@ -60,6 +61,9 @@ class RealLiberoExecutor:
         self._task = task
         self.step_count = 0
         self.invalid_action = False
+        self.inference_calls = 0
+        if hasattr(self.policy, "config") and hasattr(self.policy.config, "n_action_steps"):
+            self.policy.config.n_action_steps = int(task.n_action_steps)
         self.policy.reset()
         self.pre, self.post = make_pre_post_processors(
             self.policy.config,
@@ -100,6 +104,7 @@ class RealLiberoExecutor:
             obs = self._observation(self._raw, task)
             with torch.inference_mode():
                 action6 = self.post(self.policy.select_action(self.pre(obs)))
+                self.inference_calls += 1
             action6 = action6.detach().float().cpu().numpy().reshape(-1)
             if action6.shape[0] < 6 or not np.isfinite(action6[:6]).all():
                 self.invalid_action = True
@@ -119,6 +124,8 @@ class RealLiberoExecutor:
             "terminated": bool(terminated or truncated),
             "invalid_action": self.invalid_action,
             "mean_inference_ms": self.last_latency_ms,
+            "inference_calls": self.inference_calls,
+            "n_action_steps": task.n_action_steps,
             "reward": float(reward),
             "info": {str(key): str(value) for key, value in info.items()},
         }

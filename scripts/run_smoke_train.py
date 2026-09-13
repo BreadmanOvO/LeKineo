@@ -108,6 +108,74 @@ class LiberoAdapter:
         }
 
 
+class LazyLiberoAdapter:
+    """Episode-indexed adapter that decodes only the requested episode."""
+
+    def __init__(self, parquet_path: str, state_indices: list[int], action_indices: list[int], chunk_size: int,
+                 episode_ids: set[int] | None = None, task_prompts: dict[int, str] | None = None):
+        self.paths = sorted(glob.glob(parquet_path)) or [parquet_path]
+        self.state_indices = state_indices
+        self.action_indices = action_indices
+        self.chunk_size = chunk_size
+        self.task_prompts = task_prompts or {}
+        self.rows: list[dict] = []
+        for path in self.paths:
+            table = pq.read_table(path, columns=["episode_index", "frame_index", "task_index"])
+            for row_index, row in enumerate(table.to_pylist()):
+                episode = int(row["episode_index"])
+                if episode_ids is None or episode in episode_ids:
+                    self.rows.append({**row, "episode_index": episode, "frame_index": int(row["frame_index"]),
+                                      "_path": path, "_row_index": row_index})
+        self.rows.sort(key=lambda row: (row["episode_index"], row["frame_index"]))
+        if not self.rows:
+            raise ValueError(f"no rows found for parquet={parquet_path!r}, episode_ids={episode_ids}")
+        self._episode_cache: dict[int, list[dict]] = {}
+
+    @staticmethod
+    def _decode_image(value: dict) -> torch.Tensor:
+        image = Image.open(BytesIO(value["bytes"])).convert("RGB")
+        array = np.asarray(image, dtype=np.float32) / 255.0
+        return torch.from_numpy(array).permute(2, 0, 1).contiguous()
+
+    def _load_episode(self, episode: int) -> list[dict]:
+        if episode in self._episode_cache:
+            return self._episode_cache[episode]
+        source = next(row["_path"] for row in self.rows if row["episode_index"] == episode)
+        columns = ["observation.images.image", "observation.images.image2", "observation.state", "action",
+                   "episode_index", "frame_index", "task_index"]
+        table = pq.read_table(source, columns=columns, filters=[("episode_index", "=", episode)])
+        rows = sorted(table.to_pylist(), key=lambda row: int(row["frame_index"]))
+        self._episode_cache[episode] = rows
+        return rows
+
+    def batch(self, index: int, device: torch.device, tokens: torch.Tensor | dict[int, torch.Tensor],
+              attention: torch.Tensor | dict[int, torch.Tensor]) -> dict[str, torch.Tensor]:
+        meta = self.rows[index % len(self.rows)]
+        episode_rows = self._load_episode(meta["episode_index"])
+        local_index = next(i for i, row in enumerate(episode_rows) if int(row["frame_index"]) == meta["frame_index"])
+        row = episode_rows[local_index]
+        image1 = self._decode_image(row["observation.images.image"])
+        image2 = self._decode_image(row["observation.images.image2"])
+        state = torch.tensor(row["observation.state"], dtype=torch.float32)[self.state_indices]
+        window = []
+        for offset in range(self.chunk_size):
+            candidate = min(local_index + offset, len(episode_rows) - 1)
+            window.append(torch.tensor(episode_rows[candidate]["action"], dtype=torch.float32)[self.action_indices])
+        action = torch.stack(window)
+        task_id = int(row.get("task_index", -1))
+        selected_tokens = tokens.get(task_id, next(iter(tokens.values()))) if isinstance(tokens, dict) else tokens
+        selected_attention = attention.get(task_id, next(iter(attention.values()))) if isinstance(attention, dict) else attention
+        return {
+            "observation.images.camera1": image1.unsqueeze(0).to(device),
+            "observation.images.camera2": image2.unsqueeze(0).to(device),
+            "observation.images.camera3": image2.unsqueeze(0).to(device),
+            "observation.state": state.unsqueeze(0).to(device),
+            "action": action.unsqueeze(0).to(device),
+            OBS_LANGUAGE_TOKENS: selected_tokens.to(device),
+            OBS_LANGUAGE_ATTENTION_MASK: selected_attention.bool().to(device),
+        }
+
+
 def split_inputs(config: dict, split_name: str) -> tuple[set[int] | None, dict[int, str]]:
     split_path = config["data"].get("task_split")
     if not split_path or not Path(split_path).exists():
