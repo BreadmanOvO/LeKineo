@@ -32,9 +32,13 @@ class RealLiberoExecutor:
         self.pre = None
         self.post = None
         self.step_count = 0
-        self.last_latency_ms = 0.0
         self.invalid_action = False
         self.inference_calls = 0
+        self.total_environment_steps = 0
+        self.inference_seconds = 0.0
+        self.action_delta_sum = 0.0
+        self.action_delta_count = 0
+        self._previous_action: np.ndarray | None = None
         self._task: TaskSpec | None = None
 
     def reset(self, task: TaskSpec, attempt: int) -> None:
@@ -61,7 +65,7 @@ class RealLiberoExecutor:
         self._task = task
         self.step_count = 0
         self.invalid_action = False
-        self.inference_calls = 0
+        self._previous_action = None
         if hasattr(self.policy, "config") and hasattr(self.policy.config, "n_action_steps"):
             self.policy.config.n_action_steps = int(task.n_action_steps)
         self.policy.reset()
@@ -105,20 +109,33 @@ class RealLiberoExecutor:
             with torch.inference_mode():
                 queues = getattr(self.policy, "_queues", {})
                 action_queue = queues.get("action")
-                if action_queue is None or len(action_queue) == 0:
+                generates_chunk = action_queue is None or len(action_queue) == 0
+                if generates_chunk:
                     self.inference_calls += 1
+                    if self.device.type == "cuda":
+                        torch.cuda.synchronize(self.device)
+                    inference_started = time.perf_counter()
                 action6 = self.post(self.policy.select_action(self.pre(obs)))
+                if generates_chunk:
+                    if self.device.type == "cuda":
+                        torch.cuda.synchronize(self.device)
+                    self.inference_seconds += time.perf_counter() - inference_started
             action6 = action6.detach().float().cpu().numpy().reshape(-1)
             if action6.shape[0] < 6 or not np.isfinite(action6[:6]).all():
                 self.invalid_action = True
                 break
             action7 = np.zeros(7, dtype=np.float32)
             action7[:6] = action6[:6]
+            if self._previous_action is not None:
+                self.action_delta_sum += float(np.abs(action7 - self._previous_action).mean())
+                self.action_delta_count += 1
+            self._previous_action = action7.copy()
             self._raw, reward, terminated, truncated, info = self.env.step(action7)
             self.step_count += 1
+            self.total_environment_steps += 1
             if terminated or truncated:
                 break
-        self.last_latency_ms = 1000.0 * (time.perf_counter() - started) / max(1, self.step_count)
+        rollout_step_ms = 1000.0 * (time.perf_counter() - started) / max(1, self.step_count)
         success = bool(info.get("success", False) or (terminated and float(reward) > 0.0))
         return {
             "step_count": self.step_count,
@@ -126,8 +143,11 @@ class RealLiberoExecutor:
             "object_in_target": success,
             "terminated": bool(terminated or truncated),
             "invalid_action": self.invalid_action,
-            "mean_inference_ms": self.last_latency_ms,
+            "mean_inference_ms": 1000.0 * self.inference_seconds / max(1, self.inference_calls),
+            "mean_rollout_step_ms": rollout_step_ms,
             "inference_calls": self.inference_calls,
+            "total_environment_steps": self.total_environment_steps,
+            "action_smoothness_l1": self.action_delta_sum / max(1, self.action_delta_count),
             "n_action_steps": task.n_action_steps,
             "reward": float(reward),
             "info": {str(key): str(value) for key, value in info.items()},

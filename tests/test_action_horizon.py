@@ -16,3 +16,7 @@ def test_action_horizon_dry_run_protocol(tmp_path: Path):
     assert payload["status"] == "PROVISIONAL_DRY_RUN"
     assert payload["rows"] == 8
     assert csv_path.exists()
+    import csv
+    rows = list(csv.DictReader(csv_path.open()))
+    assert {"attempts", "total_environment_steps", "total_inference_calls", "mean_inference_ms",
+            "action_smoothness_l1", "peak_vram_gb"}.issubset(rows[0])
