@@ -145,6 +145,9 @@ class LazyLiberoAdapter:
                    "episode_index", "frame_index", "task_index"]
         table = pq.read_table(source, columns=columns, filters=[("episode_index", "=", episode)])
         rows = sorted(table.to_pylist(), key=lambda row: int(row["frame_index"]))
+        # Keep a one-episode cache: validation iteration must not accumulate
+        # decoded JPEG tensors for every episode in the split.
+        self._episode_cache.clear()
         self._episode_cache[episode] = rows
         return rows
 
